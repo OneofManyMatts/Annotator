@@ -83,43 +83,99 @@ def size_analyze(ray):
 		print(options[ray])
 
 def opcode_analyze(op):
-	options = {
-		'8b00' : 'mov (%rax),%eax : This is an assignment, likely of four bytes or less.'
+	load_assign_set ={
+		'40' : '(%rax),%rax',
+		'58' : '(%rax),%rbx',
+		'48' : '(%rax),%rcx',
+		'50' : '(%rax),%rdx',
+		'43' : '(%rbx),%rax',
+		'5b' : '(%rbx),%rbx',
+		'4b' : '(%rbx),%rcx',
+		'53' : '(%rbx),%rdx',
+		'41' : '(%rcx),%rax',
+		'59' : '(%rcx),%rbx',
+		'49' : '(%rcx),%rcx',
+		'51' : '(%rcx),%rdx',
+		'42' : '(%rdx),%rax',
+		'5a' : '(%rdx),%rbx',
+		'4a' : '(%rdx),%rcx',
+		'52' : '(%rdx),%rdx'
 	}
-	if op not in options:
-		print('That opcode is not implemented.')
+	eightb_eightnine_ends = {
+		'00' : '%eax',
+		'18' : '%ebx',
+		'08' : '%ecx',
+		'10' : '%edx'
+	}
+	if(op[:2]=='48'):
+		srh = op[0:6]+'(\\d+)'
+		m = re.search(srh, op)
+		j = m.group(1)
+		if(op[2:4]=='8b'):
+			a = load_assign_set[op[4:6]]
+			print('mov 0x'+j+a+': Loading a value for use.')
+			return 1
+		if(op[2:4]=='89'):
+			a = load_assign_set[op[4:6]][-4:]
+			b = load_assign_set[op[4:6]][0:6]
+			print('mov '+a+',0x'+j+b+': Assigning a value to the struct.')
+			return 2
+	elif(op[:2]=='8b'):
+			print('mov (%rax),'+eightb_eightnine_ends[op[2:4]]+': This is a read from the structure as a whole.')
+			return 3
+	elif(op[:2]=='89'):
+			print('mov '+eightb_eightnine_ends[op[2:4]]+',(%rax): This is an assignment to the structure as a whole')
+			return 4
 	else:
-		print(options[op])
+		print('Opcode not interpreted.')
+		return -1
 
-def analyze(kay):
-	#print(kay)
-	#include options for  'alloc_func','alloc_pc','end','free_func','free_pc', others
-	if('size_access' in kay):
-		m = re.search('\"size_access\":(\d+)', kay)
-		j = m.group(1)
-		print('Found Size Access Value: %s'%j)
-		k = int(j, 0)
-		size_analyze(k)
-	if('opcode' in kay):
-		m = re.search('\"opcode\":\"([0-9a-f]+)\"', kay)
-		j = m.group(1)
-		print('Found Opcode: %s'%j)
-		r = '%s'%j
-		opcode_analyze(r)
-	print("We don't know everything right now. This is for using the string to determine things like type.")
+def alloc_free_analyze(kay, op):
+	setofvals = {
+		'alloc_func': 'This is the address of the start of the function where the structure was allocated.',
+		'alloc_pc': 'This is the actual point in code where the structure was allocated.',
+		'end': 'This is the end of where the structure is held in memory.',
+		'free_func': 'This is the address of the start of the function where the structure was freed.',
+		'free_pc': 'This is the actual point in code where the structure was freed.',
+		'start': 'This is the start of where the structure is held in memory.',
+	}
+	for val in setofvals:
+		if(val in kay):
+			srh = '\"%s\":(\d+)'%val
+			m = re.search(srh, kay)
+			j = m.group(1)
+			if(int(j, 0)==int(op, 0)):
+				print(setofvals[val])
+				return 1
+	return -1
 
-def print_range(filename, start):
+def analyze(kay, address):
+	if(alloc_free_analyze(kay, address)<0):
+		if('size_access' in kay):
+			m = re.search('\"size_access\":(\d+)', kay)
+			j = m.group(1)
+			print('Found Size Access Value: %s'%j)
+			k = int(j, 0)
+			size_analyze(k)
+		if('opcode' in kay):
+			m = re.search('\"opcode\":\"([0-9a-f]+)\"', kay)
+			j = m.group(1)
+			print('Found Opcode: %s'%j)
+			r = '%s'%j
+			opcode_analyze(r)
+	else:
+		print('This address is in a struct. Details on the values written and read from it are given below in JSON.')
+
+def print_range(filename, start, subject):
 	i = nested_seek(filename, start, 0, ['{'])
 	j = nested_seek(filename, start, 1, ['}'])
-	print("%i, %i"%(i,j))
+	#print("%i, %i"%(i,j))
 	with open(filename, 'r') as f:
 		f.seek(i)
 		r = f.read(j-i+1)
 		k = json.loads(r)
+		analyze(r, subject)
 		pprint(k)
-		#k = f.read(j-i+1)
-		#print(k)
-		analyze(r)
 
 def find_address():
 	filename = 'out_%s'%(sys.argv[1])
@@ -133,17 +189,50 @@ def find_address():
         		foundloc.append(loc)
         		loc = s.find(target.encode(), loc + 1)
 		for found in foundloc:
-			print('Found: %i, %s'%(found, target))
-			print_range(filename, found)
-			#j = json.loads(f.read())
-			#pprint(j)	
+			#print('Found: %i, %s'%(found, target))
+			print_range(filename, found, target)	
 		if(len(foundloc)<1):
 			print('No matches found.')
+		f.close()
+
+def average_size():
+	filename = 'out_%s'%(sys.argv[1])
+	with open(filename, 'r') as f:
+		s = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+		target = '"size":'
+		loc = 0
+		loc = s.find(target.encode())
+		foundloc = []
+		while loc >= 0:
+        		foundloc.append(loc)
+        		loc = s.find(target.encode(), loc + 1)
+		str_num = 0 #struct number
+		tot_siz = 0 #total struct size
+		for found in foundloc:
+			str_num = str_num+1
+			f.seek(found)
+			i = 7
+			while(1):
+				f.seek(found+i)
+				r = f.read(1)
+				if(r==','):
+					break
+				i = i+1
+			f.seek(found+7)
+			result = f.read(i-7)
+			tot_siz = tot_siz + int(result, 0)
+		if(len(foundloc)<1):
+			print('No structs found.')
+		else:
+			average = tot_siz / str_num
+			print('Average struct size is: %i.'%average)
+		f.close()
 
 def main():
 	execute = '/home/matthew/Downloads/dynamorio/build/bin64/drrun -opt_cleancall 3 -c dynStruct -o out_%s -- tests/%s' % (sys.argv[1],sys.argv[1])
 	print(execute);
 	os.system(execute)
+	average_size()
 	find_address()
 
 main()
